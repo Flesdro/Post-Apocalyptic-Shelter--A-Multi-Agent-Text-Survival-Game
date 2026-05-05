@@ -5,6 +5,7 @@ export const agents: NpcAgent[] = [
     id: "doctor",
     name: "林医生",
     role: "医疗与感染控制",
+    personality: "谨慎、同情弱者，但面对感染风险时会非常坚决。",
     avatar: "林",
     priority: "medicine"
   },
@@ -12,6 +13,7 @@ export const agents: NpcAgent[] = [
     id: "engineer",
     name: "周工程师",
     role: "设施与防御",
+    personality: "务实、直接，习惯从设施、门禁、电力和防御角度判断问题。",
     avatar: "周",
     priority: "security"
   },
@@ -19,6 +21,7 @@ export const agents: NpcAgent[] = [
     id: "scout",
     name: "陈侦察员",
     role: "外勤与资源",
+    personality: "胆大、熟悉外部环境，愿意冒险换取食物和情报。",
     avatar: "陈",
     priority: "food"
   }

@@ -27,6 +27,7 @@ export type NpcAgent = {
   id: "doctor" | "engineer" | "scout";
   name: string;
   role: string;
+  personality: string;
   avatar: string;
   priority: keyof Omit<ShelterState, "day">;
 };
@@ -52,4 +53,9 @@ export type Ending = {
   id: string;
   title: string;
   description: string;
+};
+
+export type NpcReply = {
+  agentId: NpcAgent["id"];
+  text: string;
 };

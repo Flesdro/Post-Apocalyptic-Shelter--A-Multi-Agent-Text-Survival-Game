@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { agents, getNpcAdvice, getNpcReaction } from "@/lib/agents";
 import { getEnding } from "@/lib/endings";
 import { getEventForDay, initialState } from "@/lib/events";
 import { calculateReward, getStabilityScore } from "@/lib/reward";
 import { advanceDay, applyOption, formatDelta } from "@/lib/simulation";
-import type { ChatMessage, GameOption, RewardRecord, ShelterState } from "@/lib/types";
+import type { ChatMessage, GameEvent, GameOption, NpcReply, RewardRecord, ShelterState } from "@/lib/types";
 
 const statLabels: Array<[keyof Omit<ShelterState, "day">, string, boolean]> = [
   ["food", "食物", false],
@@ -25,14 +25,7 @@ function createInitialMessages() {
       name: "系统",
       text: `Day 1: ${firstEvent.title}。${firstEvent.briefing}`,
       kind: "event"
-    },
-    ...agents.map((agent) => ({
-      id: `advice-1-${agent.id}`,
-      speaker: agent.id,
-      name: agent.name,
-      text: getNpcAdvice(agent, initialState, firstEvent),
-      kind: "advice" as const
-    }))
+    }
   ] satisfies ChatMessage[];
 }
 
@@ -41,15 +34,28 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>(createInitialMessages);
   const [rewards, setRewards] = useState<RewardRecord[]>([]);
   const [finished, setFinished] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const initialAdviceLoaded = useRef(false);
 
   const currentEvent = getEventForDay(state.day);
   const ending = useMemo(() => (finished ? getEnding(state, rewards) : null), [finished, rewards, state]);
   const stability = getStabilityScore(state);
 
-  function chooseOption(option: GameOption) {
-    if (finished) {
+  useEffect(() => {
+    if (initialAdviceLoaded.current) {
       return;
     }
+
+    initialAdviceLoaded.current = true;
+    void appendAdviceMessages(initialState, getEventForDay(1), "initial");
+  }, []);
+
+  async function chooseOption(option: GameOption) {
+    if (finished || isGenerating) {
+      return;
+    }
+
+    setIsGenerating(true);
 
     const before = state;
     const after = applyOption(before, option);
@@ -76,23 +82,32 @@ export default function Home() {
         name: "系统",
         text: `结果：${option.description} 状态变化：${formatDelta(option)}。本日 reward: ${reward > 0 ? "+" : ""}${reward}`,
         kind: "result"
-      },
-      ...agents.map((agent) => ({
-        id: `reaction-${before.day}-${agent.id}`,
-        speaker: agent.id,
-        name: agent.name,
-        text: getNpcReaction(agent, before, after, option),
-        kind: "result" as const
-      }))
+      }
     ];
 
     const nextRewards = [...rewards, rewardRecord];
+    setMessages((current) => [...current, ...resultMessages]);
+
+    const reactionMessages = await requestNpcMessages({
+      phase: "reaction",
+      state: after,
+      event: currentEvent,
+      previousState: before,
+      playerAction: option,
+      reward,
+      idPrefix: `reaction-${before.day}`,
+      kind: "result",
+      fallback: agents.map((agent) => ({
+        agentId: agent.id,
+        text: getNpcReaction(agent, before, after, option)
+      }))
+    });
 
     if (before.day >= 7) {
       const finalEnding = getEnding(after, nextRewards);
-      setMessages([
-        ...messages,
-        ...resultMessages,
+      setMessages((current) => [
+        ...current,
+        ...reactionMessages,
         {
           id: `ending-${finalEnding.id}`,
           speaker: "system",
@@ -104,6 +119,7 @@ export default function Home() {
       setState(after);
       setRewards(nextRewards);
       setFinished(true);
+      setIsGenerating(false);
       return;
     }
 
@@ -116,19 +132,14 @@ export default function Home() {
         name: "系统",
         text: `Day ${nextState.day}: ${nextEvent.title}。${nextEvent.briefing}`,
         kind: "event"
-      },
-      ...agents.map((agent) => ({
-        id: `advice-${nextState.day}-${agent.id}`,
-        speaker: agent.id,
-        name: agent.name,
-        text: getNpcAdvice(agent, nextState, nextEvent),
-        kind: "advice" as const
-      }))
+      }
     ];
 
-    setMessages([...messages, ...resultMessages, ...nextDayMessages]);
+    setMessages((current) => [...current, ...reactionMessages, ...nextDayMessages]);
     setState(nextState);
     setRewards(nextRewards);
+    await appendAdviceMessages(nextState, nextEvent, `day-${nextState.day}`);
+    setIsGenerating(false);
   }
 
   function resetGame() {
@@ -136,6 +147,27 @@ export default function Home() {
     setMessages(createInitialMessages());
     setRewards([]);
     setFinished(false);
+    setIsGenerating(false);
+    void appendAdviceMessages(initialState, getEventForDay(1), `reset-${Date.now()}`);
+  }
+
+  async function appendAdviceMessages(nextState: ShelterState, event: GameEvent, idPrefix: string) {
+    setIsGenerating(true);
+
+    const adviceMessages = await requestNpcMessages({
+      phase: "advice",
+      state: nextState,
+      event,
+      idPrefix: `advice-${idPrefix}`,
+      kind: "advice",
+      fallback: agents.map((agent) => ({
+        agentId: agent.id,
+        text: getNpcAdvice(agent, nextState, event)
+      }))
+    });
+
+    setMessages((current) => [...current, ...adviceMessages]);
+    setIsGenerating(false);
   }
 
   return (
@@ -143,7 +175,7 @@ export default function Home() {
       <section className="phone" aria-label="避难所群聊">
         <header className="chat-header">
           <h1>避难所 07 群聊</h1>
-          <p>Day {state.day > 7 ? 7 : state.day} / 7 · 三名 Agent 正在等待你的决策</p>
+          <p>Day {state.day > 7 ? 7 : state.day} / 7 · {isGenerating ? "Agent 正在输入..." : "三名 Agent 正在等待你的决策"}</p>
         </header>
 
         <div className="messages">
@@ -159,7 +191,7 @@ export default function Home() {
             </button>
           ) : (
             currentEvent.options.map((option) => (
-              <button className="action-button" key={option.id} onClick={() => chooseOption(option)}>
+              <button className="action-button" key={option.id} onClick={() => chooseOption(option)} disabled={isGenerating}>
                 <strong>{option.label}</strong>
                 <span>{option.description}</span>
               </button>
@@ -237,6 +269,69 @@ export default function Home() {
       </aside>
     </main>
   );
+}
+
+async function requestNpcMessages({
+  phase,
+  state,
+  event,
+  previousState,
+  playerAction,
+  reward,
+  idPrefix,
+  kind,
+  fallback
+}: {
+  phase: "advice" | "reaction";
+  state: ShelterState;
+  event: GameEvent;
+  previousState?: ShelterState;
+  playerAction?: GameOption;
+  reward?: number;
+  idPrefix: string;
+  kind: "advice" | "result";
+  fallback: NpcReply[];
+}) {
+  try {
+    const response = await fetch("/api/npc-replies", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        phase,
+        agents,
+        state,
+        event,
+        previousState,
+        playerAction,
+        reward
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error("NPC reply request failed");
+    }
+
+    const data = (await response.json()) as { replies?: NpcReply[] };
+    return repliesToMessages(data.replies?.length ? data.replies : fallback, idPrefix, kind);
+  } catch {
+    return repliesToMessages(fallback, idPrefix, kind);
+  }
+}
+
+function repliesToMessages(replies: NpcReply[], idPrefix: string, kind: "advice" | "result") {
+  return agents.map((agent) => {
+    const reply = replies.find((item) => item.agentId === agent.id);
+
+    return {
+      id: `${idPrefix}-${agent.id}`,
+      speaker: agent.id,
+      name: agent.name,
+      text: reply?.text || "我需要更多信息，但现在必须立刻决策。",
+      kind
+    } satisfies ChatMessage;
+  });
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
